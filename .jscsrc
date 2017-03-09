@@ -1,0 +1,11 @@
+{
+    "preset": "google",
+    "validateIndentation": 4,
+    "requireDotNotation": false,
+
+    // Customized properties
+    "requireCamelCaseOrUpperCaseIdentifiers": {
+        "allowedPrefixes": ["po_", "nggettext_"],
+        "ignoreProperties": true
+    }
+}

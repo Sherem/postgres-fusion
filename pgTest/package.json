@@ -1,0 +1,16 @@
+{
+  "name": "postgresfusion",
+  "version": "0.0.1",
+  "dependencies": {
+    "pg": "^6.1.3",
+    "pg-native": "^1.10.0"
+  },
+  "description": "Postgres test script for nexenta fusion",
+  "main": "app.js",
+  "devDependencies": {},
+  "scripts": {
+    "test": "test"
+  },
+  "author": "Dmitry Sheremet",
+  "license": "MIT"
+}

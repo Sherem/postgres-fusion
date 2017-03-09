@@ -1,0 +1,57 @@
+{
+    "node": true,
+    "browser": true,
+    "esnext": true,
+    "bitwise": false,
+    "camelcase": false,
+    "curly": false,
+    "eqeqeq": true,
+    "immed": true,
+    "latedef": true,
+    "newcap": true,
+    "noarg": true,
+    "quotmark": "single",
+    "regexp": true,
+    "undef": true,
+    "unused": true,
+    "strict": false,
+    "trailing": true,
+    "smarttabs": false,
+    "jasmine": true,
+    "globals": [
+        "node",
+        "browser"
+    ],
+    "predef": [
+        "define",
+        "inject",
+        "commonEnums",
+        "grunt",
+        "sprintf",
+        // Protractor variables
+        "protractor", "browser", "by", "element",
+
+        // Client side globals
+        "angular", "d3", "$", "nv", "_", "lodash", "moment", "chai",
+        "io", "later", "prettyCron",
+        "ApplicationConfiguration",
+
+        // Taken from nef predef. Expected to be sufficient
+        // to validate server side code
+        "exports", "module", "require", "process", "__filename",
+        "__dirname", "global", "console", "setInterval",
+        "setTimeout", "clearInterval", "clearTimeout",
+        "__", "__n", "describe", "it", "before", "after",
+        "beforeEach", "afterEach", "parsel10n", "gettext"
+    ],
+    "indent": 4,
+    "devel": true,
+    "noempty": true,
+    "maxlen": 80,
+
+    // Ignored Warnings
+    "-W003": true, // 'x' was used before it was defined
+    // "-W117": true, // underscore is undefined
+    "-W030": true, // Expected an assignment or function call and instead saw an expression (chai expect syntax),
+    "-W079": true // Redefinition of (expect = require('chai').expect syntax)
+}
