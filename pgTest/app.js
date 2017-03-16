@@ -135,8 +135,8 @@ function newProbe(client, probe, values, cb) {
         '  hostId varchar(50), ' +
         '  objectName  varchar(1024),' +
         '  %(valuesFields)s);' +
-    'CREATE INDEX src_%(probe)s ON %(table)s ' +
-    '(hostId, time, objectName)';
+        'CREATE INDEX src_%(probe)s ON %(table)s ' +
+        '(hostId, time, objectName)';
 
     var valuesFields = values.map(value => value + ' float8').join(',');
 
@@ -257,7 +257,14 @@ function insertValues(client, params, cb) {
         return preparedData;
     }, preparedData);
 
-    client.execute(getStatementName(probe), preparedData, call(cb));
+    client.execute(getStatementName(probe), preparedData, function(err) {
+        if (err) {
+            log(JSON.stringify(params, null, '  '));
+            cb(err);
+        }
+
+        cb(null);
+    });
 }
 
 function insertDataChunk(client, hitsArray, cb) {
