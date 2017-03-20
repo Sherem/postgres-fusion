@@ -5,17 +5,12 @@ const _ = require('lodash');
 const sprintf = require('sprintf');
 const elasticSearch = require('elasticsearch');
 
-const GET_PROBE_INFO = 'get_probe_info';
-const ADD_PROBE_INFO = 'add_probe_info';
-const SET_ANALYTICS = 'set_analytics_';
-
 var args = process.argv.slice(2);
 
 var options = '';
 var params = [];
 var elasticClient;
-var client;
-
+var pool;
 
 args.forEach(a => {
     if (_.head(a) === '-') {
@@ -31,7 +26,18 @@ var esHost = params[0];
 
 const call = cb => err => cb(err);
 
+const callRelease = (cb, release) => err => {
+    release();
+    cb();
+}
+
 function log() {
+    var args = Array.prototype.slice.call(arguments);
+    var text = sprintf.apply(null, args);
+    process.stdout.write(text);
+}
+
+function logLn() {
     var args = Array.prototype.slice.call(arguments);
     var text = sprintf.apply(null, args);
     console.log(text);
@@ -39,21 +45,139 @@ function log() {
 
 function error() {
     var args = Array.prototype.slice.call(arguments);
-    log.apply(null, args);
+    logLn.apply(null, args);
 }
 
-function getAanalyticsData(client, cb) {
-    var retreived = 0;
-    var total = -1;
-    var pageSize = 100;
+function insertProbes(pool, cb) {
     var searchOpts = {
         index: 'analytics-*',
         query: {
             match_all: {}
         },
-        size: pageSize,
-        from: 0
+        size: 1000
     };
+
+    getEsdbData(searchOpts, function(hits, done) {
+        async.each(hits, function(hit, done) {
+            var source = hit._source;
+            var typeArr = hit._type.split(':');
+            var probe = typeArr.pop();
+            var params = {
+                probe: probe,
+                time: source.timestamp,
+                hostName: source.hostName,
+                hostId: source.hostId,
+                objectName: source.objectName,
+                values: source.values
+            };
+
+            async.parallel([
+                function(doneAnalytic) {
+                    async.waterfall([
+                        function(next) {
+                            pool.connect(next);
+                        },
+                        function(client, release, next) {
+                            async.series([
+                                function(next) {
+                                    getProbeInfo(client, params, next);
+                                },
+                                function(next) {
+                                    insertValues(client, params, next);
+                                }
+                            ], (err) => {
+                                release();
+                                next(err);
+                            });
+                        }
+                    ], doneAnalytic);
+                },
+                function(doneHosts) {
+                    insertHosts(pool, {
+                        hostName: params.hostName,
+                        hostId: params.hostId
+                    }, doneHosts);
+                }
+            ], done);
+        }, done);
+    }, cb);
+}
+
+function insertLog(pool, cb) {
+    var searchOpts = {
+        index: 'logs',
+        query: {
+            match_all: {}
+        },
+        size: 100
+    };
+
+    getEsdbData(searchOpts, function(hits, done) {
+        async.forEach(hits,
+            function(hit, done) {
+                if (hit._type !== 'hostLog') {
+                    logLn('Unsupported type: %s', hit._type);
+                    return done();
+                }
+                var pl = hit._source;
+                var preparedData = [
+                    pl.hostId,
+                    pl.component,
+                    pl.message,
+                    pl.facility,
+                    pl.severity,
+                    pl.timestamp,
+                    pl.origin
+                ];
+
+                var request = 'INSERT INTO hostLog' +
+                    '(' +
+                    '  hostId,' +
+                    '  component,' +
+                    '  message,' +
+                    '  facility,' +
+                    '  severity,' +
+                    '  time,' +
+                    '  origin' +
+                    ') values ($1, $2, $3, $4, $5, $6, $7)';
+
+                async.parallel([
+                    function(doneLog) {
+                        async.waterfall([
+                            function(next) {
+                                pool.connect(next);
+                            },
+                            function(client, release, next) {
+                                client.query(request, preparedData, err => {
+                                    release();
+                                    next(err);
+                                });
+                            }
+                        ], doneLog);
+                    },
+                    function(doneHost) {
+                        insertHosts(pool, {
+                            hostName: pl.hostname,
+                            hostId: pl.hostId
+                        }, doneHost);
+                    }
+                ], done);
+
+            }, done);
+    }, cb);
+}
+
+function getEsdbData(search, insertChunk, cb) {
+    var retreived = 0;
+    var total = -1;
+
+    var searchOpts = _.cloneDeep(search);
+    searchOpts.size = searchOpts.size || 100;
+    searchOpts.from = 0;
+    var len;
+
+    var avgTs = Date.now();
+    var ts;
 
     async.whilst(() => total === -1 || retreived < total, function(done) {
         getPage(searchOpts, done);
@@ -62,55 +186,91 @@ function getAanalyticsData(client, cb) {
     function getPage(options, done) {
         async.waterfall([
             function(next) {
+                ts = Date.now();
                 elasticClient.search(searchOpts, next);
             },
             function(res, result, next) {
                 if (res.hits) {
                     total = res.hits.total;
-                    var len = res.hits.hits.length;
+                    len = res.hits.hits.length;
 
                     if (len) {
                         retreived += len;
 
                         options.from += len;
 
-                        var pers = Math.round(retreived * 100 / total, 2)
-
-                        log('%d%%', pers);
-
-                        return insertDataChunk(client, res.hits.hits, next);
+                        return insertChunk(res.hits.hits, next);
                     }
 
                 }
                 next(new Error('ENOENT', 'No idex data'));
+            },
+            function(next) {
+                var spend = Date.now() - ts;
+                var avgSpend = Date.now() - avgTs;
+
+                var instantSpeed = len / spend;
+                var avgSpeed = retreived / avgSpend;
+
+                var pers = retreived * 100 / total;
+
+                var estimated = Date.now() + (total - retreived) * avgSpeed;
+                var finish = new Date(estimated);
+
+                log('   %5.2f%%  %8.0f rec/sec %8.0f rec/sec finish at: %s\r',
+                    pers, instantSpeed * 1000, avgSpeed * 1000, finish);
+                next();
             }
         ], (err) => done(err));
     }
 }
 
-function prepareInsertions(client, cb) {
-    async.series([
+var hostsCache = {};
+
+function insertHosts(pool, params, cb) {
+    var hostId = params.hostId;
+    if (hostsCache[hostId]) {
+        return cb();
+    }
+
+    logLn('New host: %(hostName)s %(hostId)s', params);
+
+    async.waterfall([
         function(next) {
-            client.prepare(ADD_PROBE_INFO,
-                'INSERT INTO probe_Values (probe, valueName) VALUES ($1, $2)',
-                2, call(next));
+            pool.connect(next);
         },
-        function(next) {
-            client.prepare(GET_PROBE_INFO,
-                'SELECT probe, valueName FROM probe_Values WHERE probe = $1',
-                1, call(next));
+        function(client, release, next) {
+            async.waterfall([
+                function(next) {
+                    client.query('SELECT hostid FROM hosts WHERE hostid=$1',
+                        [hostId], next);
+                },
+                function(hosts, next) {
+                    if (_.isEmpty(hosts)) {
+                        client.query('INSERT INTO hosts (hostid, hostname)' +
+                            'values ($1,$2) ON CONFLICT (hostid) DO NOTHING',
+                            [hostId, params.hostName], call(next));
+                    } else {
+                        next();
+                    }
+                },
+                function(next) {
+                    hostsCache[hostId] = true;
+                    next();
+                }
+            ], callRelease(next, release));
         }
-    ], call(cb));
+    ], cb);
 }
 
 /**
  * Creating database tables
  *
- * @param {Client} client
+ * @param {Pool} pool
  * @param {Function} cb
  */
-function createTables(client, cb) {
-    var analyticsRequest =
+function createTables(pool, cb) {
+    var requests = [
         'CREATE TABLE IF NOT EXISTS ' +
         'probe_Values (' +
         '  id serial,' +
@@ -118,13 +278,43 @@ function createTables(client, cb) {
         '  valueName varchar(25),' +
         '  PRIMARY KEY (id)' +
         ');' +
-        'CREATE INDEX IF NOT EXISTS pr_val ON probe_Values (probe, valueName)';
+        'CREATE INDEX IF NOT EXISTS pr_val ON probe_Values (probe, valueName)',
 
-    client.query(analyticsRequest, call(cb));
-}
+        'CREATE TABLE IF NOT EXISTS ' +
+        'hostLog (' +
+        '  id serial PRIMARY KEY,' +
+        '  hostId varchar(50),' +
+        '  component varchar(50),' +
+        '  message varchar(1024),' +
+        '  facility varchar(25),' +
+        '  severity varchar(15),' +
+        '  time timestamp,' +
+        '  origin varchar(15)' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS host_log ON hostLog (hostid, severity)',
 
-function getStatementName(probe) {
-    return SET_ANALYTICS + probe;
+        'CREATE TABLE IF NOT EXISTS ' +
+        'hosts (' +
+        '  hostId varchar(20) PRIMARY KEY,' +
+        '  hostName varchar(20)' +
+        ')'
+
+    ];
+
+    async.each(requests, function(request, done) {
+        async.waterfall([
+            function(next) {
+                pool.connect(next);
+            },
+            function(client, done, next) {
+                client.query(request, err => {
+                    done();
+                    next(err);
+                });
+            }
+        ], done);
+    }, cb);
+
 }
 
 function newProbe(client, probe, values, cb) {
@@ -135,7 +325,7 @@ function newProbe(client, probe, values, cb) {
         '  hostId varchar(50), ' +
         '  objectName  varchar(1024),' +
         '  %(valuesFields)s);' +
-        'CREATE INDEX src_%(probe)s ON %(table)s ' +
+        'CREATE INDEX IF NOT EXISTS src_%(probe)s ON %(table)s ' +
         '(hostId, time, objectName)';
 
     var valuesFields = values.map(value => value + ' float8').join(',');
@@ -147,25 +337,23 @@ function newProbe(client, probe, values, cb) {
     client.query(createRequest, call(cb));
 }
 
-function prepareProbeInsert(client, probe, values, cb) {
+const probesCache = {};
+const probeInsertions = {};
+
+function prepareProbeInsert(probe, values) {
     var tableName = sprintf('analytics_%s', probe);
 
     var insertBase = 'INSERT INTO %(table)s ' +
         '(time, hostId, objectName, %(values)s) ' +
         'VALUES ($1, $2, $3, %(valueParams)s)';
-    var insertRequest = sprintf(insertBase, {
+
+    probeInsertions[probe] = sprintf(insertBase, {
         table: tableName,
         values: values.join(','),
         valueParams: values.map((v, i) => '$' + (i + 4)).join(',')
     });
 
-    client.prepare(getStatementName(probe),
-        insertRequest, values.length + 4,
-        call(cb)
-    );
 }
-
-const probesCache = {};
 
 function startTransaction(client, cb) {
     client.query('BEGIN;', call(cb));
@@ -191,29 +379,51 @@ function commitOrRollback(client, cb) {
     };
 }
 
+var probeCreating = {};
+
 function getProbeInfo(client, metricRecord, cb) {
     var probe = metricRecord.probe;
     var values = _.keys(metricRecord.values);
-    var cachedProbes = false;
+
+    if (probeCreating[probe]) {
+        return async.whilst(
+            () => probeCreating[probe], done => setTimeout(done, 10),
+            function(err) {
+                if (err) {
+                    return cb;
+                }
+
+                getProbeInfo(client, metricRecord, cb);
+            });
+    }
+
+    var cachedProbes = probesCache[probe];
+    if (cachedProbes) {
+        return cb();
+    }
+
+    probeCreating[probe] = true;
+
+    prepareProbeInsert(probe, values);
 
     async.waterfall([
             function(next) {
-                cachedProbes = probesCache[probe];
-                if (cachedProbes) {
-                    return next(null, probesCache[probe]);
-                }
-                client.execute(GET_PROBE_INFO, [probe], next);
+                startTransaction(client, next);
+            },
+            function(next) {
+                client.query('SELECT probe, valueName FROM probe_Values' +
+                    ' WHERE probe = $1', [probe], next);
             },
             function(probes, next) {
                 if (_.isEmpty(probes)) {
                     return async.series([
                         function(next) {
-                            startTransaction(client, next);
-                        },
-                        function(next) {
-                            log('New probe: %s [%s]', probe, values.join(', '));
+                            logLn('New probe: %s [%s]', probe, values.join(', '));
                             async.forEachSeries(values, function(value, done) {
-                                client.execute(ADD_PROBE_INFO,
+                                client.query(
+                                    'INSERT INTO probe_Values ' +
+                                    '(probe, valueName) ' +
+                                    'VALUES ($1, $2)',
                                     [probe, value], call(done));
                             }, next);
                         },
@@ -226,21 +436,17 @@ function getProbeInfo(client, metricRecord, cb) {
                                 client, probe, values, next
                             );
                         }
-                    ], commitOrRollback(client, call(next)));
+                    ], next);
                 } else {
                     probesCache[probe] = probes;
                     next();
                 }
-            },
-            function(next) {
-                if (cachedProbes) {
-                    return next();
-                }
-                prepareProbeInsert(client, probe, values, next);
             }
         ],
-        cb
-    );
+        commitOrRollback(client, err => {
+            probeCreating[probe] = false;
+            cb(err);
+        }));
 }
 
 function insertValues(client, params, cb) {
@@ -257,9 +463,9 @@ function insertValues(client, params, cb) {
         return preparedData;
     }, preparedData);
 
-    client.execute(getStatementName(probe), preparedData, function(err) {
+    client.query(probeInsertions[probe], preparedData, function(err) {
         if (err) {
-            log(JSON.stringify(params, null, '  '));
+            logLn(JSON.stringify(params, null, '  '));
             cb(err);
         }
 
@@ -267,52 +473,43 @@ function insertValues(client, params, cb) {
     });
 }
 
-function insertDataChunk(client, hitsArray, cb) {
-    async.eachSeries(hitsArray, function(hit, done) {
-        var source = hit._source;
-        var typeArr = hit._type.split(':');
-        var probe = typeArr.pop();
-        var params = {
-            probe: probe,
-            time: source.timestamp,
-            hostName: source.hostName,
-            hostId: source.hostId,
-            objectName: source.objectName,
-            values: source.values
-        };
-
-        async.series([
-            function(next) {
-                getProbeInfo(client, params, next);
-            },
-            function(next) {
-                insertValues(client, params, next);
-            }
-        ], done);
-    }, cb);
-}
-
-function migrate(client, cb) {
+function migrate(pool, cb) {
     async.series([
         function(next) {
-            createTables(client, next);
+            createTables(pool, next);
         },
         function(next) {
-            prepareInsertions(client, next);
-        },
-        function(next) {
-            getAanalyticsData(client, call(next));
+            async.parallel([
+                function(next) {
+                    insertLog(pool, next);
+                },
+                function(next) {
+                    insertProbes(pool, next);
+                }
+            ], next);
         }
+
     ], cb);
 }
 
-function cleanup(client, cb) {
-    log('Cleanup database');
+function cleanup(pool, cb) {
+    logLn('Cleanup database');
     var cleanupRequest = 'DROP SCHEMA public CASCADE;' +
         'CREATE SCHEMA public;' +
         'GRANT ALL ON SCHEMA public TO postgres;' +
         'GRANT ALL ON SCHEMA public TO public;';
-    client.query(cleanupRequest, call(cb));
+
+    async.waterfall([
+        function(next) {
+            pool.connect(next);
+        },
+        function(client, release, next) {
+            client.query(cleanupRequest, err => {
+                release();
+                next(err);
+            });
+        }
+    ], cb);
 }
 
 function connectDb(noEsdb, cb) {
@@ -327,17 +524,24 @@ function connectDb(noEsdb, cb) {
         });
     }
 
-    client = new Client();
-    client.connect(
-        //'dbname=fusion user=fusion password=111',
-//                'postgresql://fusion:Nexenta%4012@fu-100/mydb',
-        'postgresql://fusion:Nexenta%4012@localhost/fusion',
-        cb);
+    pool = new Pool({
+        // user: 'fusion',
+        // password: 'Nexenta@12',
+        // host: 'localhost',
+        dtatbase: 'fusion',
+        Client: Client,
+        max: 30, //set pool max size to 30
+        min: 4, //set min pool size to 4
+        idleTimeoutMillis: 1000 //close idle clients after 1 second
+    });
+
+    cb();
+
 }
 
 function usage() {
-    log('Usage: app.js esdbIp[:port]');
-    log('       app.js -c');
+    logLn('Usage: app.js esdbIp[:port]');
+    logLn('       app.js -c');
 }
 
 function main() {
@@ -354,13 +558,10 @@ function main() {
         },
         function(next) {
             if (doCleanup) {
-                return cleanup(client, next);
+                return cleanup(pool, next);
             }
 
-            migrate(client, next);
-        },
-        function(next) {
-            client.end(call(next));
+            migrate(pool, next);
         }
     ], function(err) {
         if (err) {
