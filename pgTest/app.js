@@ -168,7 +168,7 @@ function insertLog(pool, cb) {
 }
 
 function getEsdbData(search, insertChunk, cb) {
-    var retreived = 0;
+    var retrieved = 0;
     var total = -1;
 
     var searchOpts = _.cloneDeep(search);
@@ -179,7 +179,7 @@ function getEsdbData(search, insertChunk, cb) {
     var avgTs = Date.now();
     var ts;
 
-    async.whilst(() => total === -1 || retreived < total, function(done) {
+    async.whilst(() => total === -1 || retrieved < total, function(done) {
         getPage(searchOpts, done);
     }, err => cb(err));
 
@@ -195,7 +195,7 @@ function getEsdbData(search, insertChunk, cb) {
                     len = res.hits.hits.length;
 
                     if (len) {
-                        retreived += len;
+                        retrieved += len;
 
                         options.from += len;
 
@@ -210,11 +210,11 @@ function getEsdbData(search, insertChunk, cb) {
                 var avgSpend = Date.now() - avgTs;
 
                 var instantSpeed = len / spend;
-                var avgSpeed = retreived / avgSpend;
+                var avgSpeed = retrieved / avgSpend;
 
-                var pers = retreived * 100 / total;
+                var pers = retrieved * 100 / total;
 
-                var estimated = Date.now() + (total - retreived) * avgSpeed;
+                var estimated = Date.now() + (total - retrieved) * avgSpeed;
                 var finish = new Date(estimated);
 
                 log('   %5.2f%%  %8.0f rec/sec %8.0f rec/sec finish at: %s\r',
