@@ -5,12 +5,12 @@ const _ = require('lodash');
 const sprintf = require('sprintf');
 const elasticSearch = require('elasticsearch');
 
-var args = process.argv.slice(2);
+const args = process.argv.slice(2);
 
-var options = '';
-var params = [];
-var elasticClient;
-var pool;
+let options = '';
+const params = [];
+let elasticClient;
+let pool;
 
 args.forEach(a => {
     if (_.head(a) === '-') {
@@ -20,36 +20,37 @@ args.forEach(a => {
     }
 });
 
-var doCleanup = _.includes(options, 'c');
+let doCleanup = _.includes(options, 'c');
 
-var esHost = params[0];
+let esHost = params[0];
 
 const call = cb => err => cb(err);
 
-const callRelease = (cb, release) => err => {
+const callRelease = (cb, release) => () => {
     release();
     cb();
-}
+};
 
 function log() {
-    var args = Array.prototype.slice.call(arguments);
-    var text = sprintf.apply(null, args);
+    const args = Array.prototype.slice.call(arguments);
+    const text = sprintf.apply(null, args);
+    process.stdout.write(text);
     process.stdout.write(text);
 }
 
 function logLn() {
-    var args = Array.prototype.slice.call(arguments);
-    var text = sprintf.apply(null, args);
+    const args = Array.prototype.slice.call(arguments);
+    const text = sprintf.apply(null, args);
     console.log(text);
 }
 
 function error() {
-    var args = Array.prototype.slice.call(arguments);
+    const args = Array.prototype.slice.call(arguments);
     logLn.apply(null, args);
 }
 
 function insertProbes(pool, cb) {
-    var searchOpts = {
+    const searchOpts = {
         index: 'analytics-*',
         query: {
             match_all: {}
@@ -59,10 +60,10 @@ function insertProbes(pool, cb) {
 
     getEsdbData(searchOpts, function(hits, done) {
         async.each(hits, function(hit, done) {
-            var source = hit._source;
-            var typeArr = hit._type.split(':');
-            var probe = typeArr.pop();
-            var params = {
+            const source = hit._source;
+            const typeArr = hit._type.split(':');
+            const probe = typeArr.pop();
+            const params = {
                 probe: probe,
                 time: source.timestamp,
                 hostName: source.hostName,
@@ -104,7 +105,7 @@ function insertProbes(pool, cb) {
 }
 
 function insertLog(pool, cb) {
-    var searchOpts = {
+    const searchOpts = {
         index: 'logs',
         query: {
             match_all: {}
@@ -119,8 +120,8 @@ function insertLog(pool, cb) {
                     logLn('Unsupported type: %s', hit._type);
                     return done();
                 }
-                var pl = hit._source;
-                var preparedData = [
+                const pl = hit._source;
+                const preparedData = [
                     pl.hostId,
                     pl.component,
                     pl.message,
@@ -130,7 +131,7 @@ function insertLog(pool, cb) {
                     pl.origin
                 ];
 
-                var request = 'INSERT INTO hostLog' +
+                const request = 'INSERT INTO hostLog' +
                     '(' +
                     '  hostId,' +
                     '  component,' +
@@ -168,16 +169,16 @@ function insertLog(pool, cb) {
 }
 
 function getEsdbData(search, insertChunk, cb) {
-    var retrieved = 0;
-    var total = -1;
+    let retrieved = 0;
+    let total = -1;
 
-    var searchOpts = _.cloneDeep(search);
+    const searchOpts = _.cloneDeep(search);
     searchOpts.size = searchOpts.size || 100;
     searchOpts.from = 0;
-    var len;
+    let len;
 
-    var avgTs = Date.now();
-    var ts;
+    const avgTs = Date.now();
+    let ts;
 
     async.whilst(() => total === -1 || retrieved < total, function(done) {
         getPage(searchOpts, done);
@@ -206,16 +207,16 @@ function getEsdbData(search, insertChunk, cb) {
                 next(new Error('ENOENT', 'No idex data'));
             },
             function(next) {
-                var spend = Date.now() - ts;
-                var avgSpend = Date.now() - avgTs;
+                const spend = Date.now() - ts;
+                const avgSpend = Date.now() - avgTs;
 
-                var instantSpeed = len / spend;
-                var avgSpeed = retrieved / avgSpend;
+                const instantSpeed = len / spend;
+                const avgSpeed = retrieved / avgSpend;
 
-                var pers = retrieved * 100 / total;
+                const pers = retrieved * 100 / total;
 
-                var estimated = Date.now() + (total - retrieved) * avgSpeed;
-                var finish = new Date(estimated);
+                const estimated = Date.now() + (total - retrieved) * avgSpeed;
+                const finish = new Date(estimated);
 
                 log('   %5.2f%%  %8.0f rec/sec %8.0f rec/sec finish at: %s\r',
                     pers, instantSpeed * 1000, avgSpeed * 1000, finish);
@@ -225,10 +226,10 @@ function getEsdbData(search, insertChunk, cb) {
     }
 }
 
-var hostsCache = {};
+const hostsCache = {};
 
 function insertHosts(pool, params, cb) {
-    var hostId = params.hostId;
+    const hostId = params.hostId;
     if (hostsCache[hostId]) {
         return cb();
     }
@@ -270,7 +271,7 @@ function insertHosts(pool, params, cb) {
  * @param {Function} cb
  */
 function createTables(pool, cb) {
-    var requests = [
+    const requests = [
         'CREATE TABLE IF NOT EXISTS ' +
         'probe_Values (' +
         '  id serial,' +
@@ -318,8 +319,8 @@ function createTables(pool, cb) {
 }
 
 function newProbe(client, probe, values, cb) {
-    var tableName = sprintf('analytics_%s', probe);
-    var baseCreateRequest = 'CREATE TABLE IF NOT EXISTS %(table)s ' +
+    const tableName = sprintf('analytics_%s', probe);
+    const baseCreateRequest = 'CREATE TABLE IF NOT EXISTS %(table)s ' +
         '( id serial PRIMARY KEY, ' +
         '  time timestamp, ' +
         '  hostId varchar(50), ' +
@@ -328,9 +329,9 @@ function newProbe(client, probe, values, cb) {
         'CREATE INDEX IF NOT EXISTS src_%(probe)s ON %(table)s ' +
         '(hostId, time, objectName)';
 
-    var valuesFields = values.map(value => value + ' float8').join(',');
+    const valuesFields = values.map(value => value + ' float8').join(',');
 
-    var createRequest = sprintf(baseCreateRequest, {
+    const createRequest = sprintf(baseCreateRequest, {
         probe: probe, table: tableName, valuesFields: valuesFields
     });
 
@@ -341,9 +342,9 @@ const probesCache = {};
 const probeInsertions = {};
 
 function prepareProbeInsert(probe, values) {
-    var tableName = sprintf('analytics_%s', probe);
+    const tableName = sprintf('analytics_%s', probe);
 
-    var insertBase = 'INSERT INTO %(table)s ' +
+    const insertBase = 'INSERT INTO %(table)s ' +
         '(time, hostId, objectName, %(values)s) ' +
         'VALUES ($1, $2, $3, %(valueParams)s)';
 
@@ -379,11 +380,11 @@ function commitOrRollback(client, cb) {
     };
 }
 
-var probeCreating = {};
+const probeCreating = {};
 
 function getProbeInfo(client, metricRecord, cb) {
-    var probe = metricRecord.probe;
-    var values = _.keys(metricRecord.values);
+    const probe = metricRecord.probe;
+    const values = _.keys(metricRecord.values);
 
     if (probeCreating[probe]) {
         return async.whilst(
@@ -397,7 +398,7 @@ function getProbeInfo(client, metricRecord, cb) {
             });
     }
 
-    var cachedProbes = probesCache[probe];
+    const cachedProbes = probesCache[probe];
     if (cachedProbes) {
         return cb();
     }
@@ -418,7 +419,8 @@ function getProbeInfo(client, metricRecord, cb) {
                 if (_.isEmpty(probes)) {
                     return async.series([
                         function(next) {
-                            logLn('New probe: %s [%s]', probe, values.join(', '));
+                            logLn('New probe: %s [%s]',
+                                probe, values.join(', '));
                             async.forEachSeries(values, function(value, done) {
                                 client.query(
                                     'INSERT INTO probe_Values ' +
@@ -450,13 +452,13 @@ function getProbeInfo(client, metricRecord, cb) {
 }
 
 function insertValues(client, params, cb) {
-    var probe = params.probe;
-    var preparedData = [
+    const probe = params.probe;
+    let preparedData = [
         params.time,
         params.hostId,
         params.objectName
     ];
-    var values = probesCache[probe];
+    const values = probesCache[probe];
 
     preparedData = values.reduce((preparedData, valueData) => {
         preparedData.push(params.values[valueData.valuename] || 0);
@@ -494,7 +496,7 @@ function migrate(pool, cb) {
 
 function cleanup(pool, cb) {
     logLn('Cleanup database');
-    var cleanupRequest = 'DROP SCHEMA public CASCADE;' +
+    const cleanupRequest = 'DROP SCHEMA public CASCADE;' +
         'CREATE SCHEMA public;' +
         'GRANT ALL ON SCHEMA public TO postgres;' +
         'GRANT ALL ON SCHEMA public TO public;';
@@ -514,7 +516,7 @@ function cleanup(pool, cb) {
 
 function connectDb(noEsdb, cb) {
     if (!noEsdb) {
-        var es = esHost.split(':');
+        const es = esHost.split(':');
         if (!es[1]) {
             es.push('9200');
         }
